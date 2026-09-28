@@ -1,4 +1,4 @@
-import type { TableSection } from '../../types';
+import type { TableSection, SimpleTableData } from '../../types';
 
 // ---------------------------------------------------------------------------
 // Value formatting
@@ -220,6 +220,55 @@ export function buildTable(
       }
     }
 
+    lines.push('\t\t\t</tr>');
+  }
+
+  lines.push('\t\t</tbody>');
+  lines.push('\t</table>');
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Simple table builder (no CM/INCH split, flat grid)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a simple flat HTML table for sheets without CM/INCH measurement split.
+ * Used for items like Socks that just have SIZE | UK | US | EU.
+ */
+export function buildSimpleTable(data: SimpleTableData): string {
+  const numCols = data.headers.length;
+  const colWidth = 64;
+  const tableWidth = numCols * colWidth;
+  const lines: string[] = [];
+
+  lines.push(`\t<table id="cm-rf-table" width="${tableWidth}">`);
+  lines.push('\t\t<colgroup>');
+  lines.push(`\t\t\t<col class="rtecenter" span="${numCols}" width="${colWidth}" />`);
+  lines.push('\t\t</colgroup>');
+  lines.push('\t\t<tbody>');
+
+  // Header row
+  lines.push('\t\t\t<tr class="sg-head" height="20">');
+  for (let i = 0; i < data.headers.length; i++) {
+    if (i === 0) {
+      lines.push(`\t\t\t\t<td class="xl347 rtecenter" height="20" width="${colWidth}">${data.headers[i]}</td>`);
+    } else {
+      lines.push(`\t\t\t\t<td class="xl347 rtecenter" width="${colWidth}">${data.headers[i]}</td>`);
+    }
+  }
+  lines.push('\t\t\t</tr>');
+
+  // Data rows
+  for (const row of data.rows) {
+    lines.push('\t\t\t<tr height="20">');
+    for (let i = 0; i < row.length; i++) {
+      if (i === 0) {
+        lines.push(`\t\t\t\t<td class="xl347 rtecenter" height="20">${formatValue(row[i])}</td>`);
+      } else {
+        lines.push(`\t\t\t\t<td class="xl347 rtecenter">${formatValue(row[i])}</td>`);
+      }
+    }
     lines.push('\t\t\t</tr>');
   }
 

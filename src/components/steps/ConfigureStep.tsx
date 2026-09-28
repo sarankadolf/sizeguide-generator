@@ -1,8 +1,9 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Zap, Hash, AlertTriangle, Link, ImageIcon, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useGuideStore } from '../../store/useGuideStore';
+import { useMappingStore } from '../../store/useMappingStore';
 import { StatusBadge } from '../ui/StatusBadge';
 import type { GuideStatus } from '../../types';
 import {
@@ -23,8 +24,19 @@ export function ConfigureStep() {
   const autoFillNumbers = useGuideStore((s) => s.autoFillNumbers);
   const setStep = useGuideStore((s) => s.setStep);
 
+  const getNextAvailableId = useMappingStore((s) => s.getNextAvailableId);
+  const isTemplateIdUsed = useMappingStore((s) => s.isTemplateIdUsed);
+  const mappingsLoaded = useMappingStore((s) => s.isLoaded);
+
   const [startNumber, setStartNumber] = useState(1);
   const [imagesExtracting, setImagesExtracting] = useState(false);
+
+  // Pre-populate startNumber with next available ID once mappings are loaded
+  useEffect(() => {
+    if (mappingsLoaded) {
+      setStartNumber(getNextAvailableId());
+    }
+  }, [mappingsLoaded, getNextAvailableId]);
 
   const handleAutoFill = useCallback(() => {
     autoFillNumbers(startNumber);
@@ -234,6 +246,12 @@ export function ConfigureStep() {
                         <div className="flex items-center gap-1 mt-1">
                           <AlertTriangle className="w-3 h-3 text-red-400" />
                           <span className="text-xs text-red-400">Duplicate</span>
+                        </div>
+                      )}
+                      {!hasDuplicateNumber && guide.guideNumber !== null && isTemplateIdUsed(guide.guideNumber) && (
+                        <div className="flex items-center gap-1 mt-1">
+                          <AlertTriangle className="w-3 h-3 text-amber-400" />
+                          <span className="text-xs text-amber-400">Template ID already exists</span>
                         </div>
                       )}
                     </div>

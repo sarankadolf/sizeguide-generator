@@ -54,11 +54,22 @@ export interface TableSection {
   inchRows: DataRow[];
 }
 
+export interface SimpleTableData {
+  headers: string[];
+  rows: string[][];
+}
+
 export interface ParsedGuideData {
   sections: TableSection[];
   measurements: MeasurementInstruction[];
   measurementTitle?: string;
   disclaimer?: string;
+  isSimple?: boolean;
+  simpleData?: SimpleTableData;
+  /** Category codes from column A of the Excel (e.g. women-arabicclothing-dresses) */
+  categories?: string[];
+  /** Brand names from the Brand Name column (e.g. [['Splash', 'splash'], ['Iconic', 'iconic']]) */
+  brands?: [string, string][];
 }
 
 // ─── Guide Configuration (store) ────────────────────────────────────────────

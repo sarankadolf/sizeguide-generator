@@ -5,6 +5,7 @@ import type {
   DataRow,
   MeasurementInstruction,
   DetectedSheet,
+  SimpleTableData,
 } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -194,16 +195,37 @@ function detectSectionsEn(sheet: XLSX.WorkSheet): SectionMeta[] {
         const val = getCell(sheet, r, c);
         if (!val) continue;
         const uv = val.toUpperCase().trim();
+        // Skip measurement columns
+        if (cmCols.some(([cc]) => cc === c) || inchCols.some(([cc]) => cc === c)) continue;
         if (
-          ['ALPHA', 'SPLASH/UK', 'SPLASH/ UK', 'EU', 'UK-SIZE', 'UK-Size', 'UK SIZE'].includes(
-            uv,
-          )
+          ['ALPHA', 'SPLASH/UK', 'SPLASH/ UK', 'EU', 'UK-SIZE', 'UK-Size', 'UK SIZE',
+           'NUMERIC SIZE', 'DENIM-SIZE', 'DENIM SIZE', 'SIZE'].includes(uv) ||
+          uv.includes('ALPHA')
         ) {
           convCols.push([c, val]);
           subHeaderRow = r;
         }
       }
       if (convCols.length > 0) break;
+    }
+
+    // If we found only one conv column (e.g. ALPHA), look for a sibling label
+    // on the same row (the UK/Numeric column) — same logic as Python parser
+    if (convCols.length === 1 && subHeaderRow !== null) {
+      const alphaCol = convCols[0][0];
+      const measColSet = new Set([...cmCols, ...inchCols].map(([cc]) => cc));
+      for (let dist = 1; dist <= 3; dist++) {
+        for (const c of [alphaCol - dist, alphaCol + dist]) {
+          if (c < 0 || c > maxC || measColSet.has(c)) continue;
+          const v = getCell(sheet, subHeaderRow, c);
+          if (v && v.length < 40) {
+            convCols.push([c, v]);
+            break;
+          }
+        }
+        if (convCols.length > 1) break;
+      }
+      convCols.sort((a, b) => a[0] - b[0]);
     }
 
     if (convCols.length === 0 && cmCols.length === 0) {
@@ -305,17 +327,37 @@ function detectSectionsAr(sheet: XLSX.WorkSheet): SectionMeta[] {
 
     const convCols: [number, string][] = [];
     let subHeaderRow: number | null = null;
-    const arConvKeywords = ['قياس ألفا', 'مقاس ألفا', 'سبلاش', 'الاتحاد الأوروبي', 'مقاس - المملكة المتحدة'];
+    const arConvKeywords = ['قياس ألفا', 'مقاس ألفا', 'سبلاش', 'الاتحاد الأوروبي', 'مقاس - المملكة المتحدة', 'ألفا', 'المقاس الرقمي'];
     for (let r = headerRow + 1; r < Math.min(headerRow + 4, maxR + 1); r++) {
       for (let c = 0; c <= maxC; c++) {
         const val = getCell(sheet, r, c).trim();
         if (!val) continue;
+        // Skip measurement columns
+        if (cmCols.some(([cc]) => cc === c) || inchCols.some(([cc]) => cc === c)) continue;
         if (arConvKeywords.some((kw) => val.includes(kw))) {
           convCols.push([c, val]);
           subHeaderRow = r;
         }
       }
       if (convCols.length > 0) break;
+    }
+
+    // If we found only one conv column, look for a sibling label on the same row
+    if (convCols.length === 1 && subHeaderRow !== null) {
+      const foundCol = convCols[0][0];
+      const measColSet = new Set([...cmCols, ...inchCols].map(([cc]) => cc));
+      for (let dist = 1; dist <= 3; dist++) {
+        for (const c of [foundCol - dist, foundCol + dist]) {
+          if (c < 0 || c > maxC || measColSet.has(c)) continue;
+          const v = getCell(sheet, subHeaderRow, c);
+          if (v && v.length < 40) {
+            convCols.push([c, v]);
+            break;
+          }
+        }
+        if (convCols.length > 1) break;
+      }
+      convCols.sort((a, b) => a[0] - b[0]);
     }
 
     if (convCols.length === 0 && cmCols.length === 0) {
@@ -497,7 +539,7 @@ function extractInstructionsAr(
       const val = getCell(sheet, r, c);
       if (!val) continue;
 
-      if (val.includes('كيفية قياس الجسم')) {
+      if (val.includes('كيفية قياس') || val.includes('كيف تقيس')) {
         howToTitle = val.replace(/ - /g, ' \u2013 ').replace(/ – /g, ' \u2013 ');
         break;
       }
@@ -506,21 +548,42 @@ function extractInstructionsAr(
         break;
       }
 
-      // AR: description in one col, name + number in later cols
+      // AR: Try both patterns:
+      // Pattern 1 (like EN): number | name | description  (number at current col or before name)
+      // Pattern 2 (some AR sheets): description | ... | name | number
       let found = false;
-      for (let c2 = c + 1; c2 <= maxC; c2++) {
-        const numVal = getCell(sheet, r, c2);
-        if (numVal && /^\d+$/.test(numVal)) {
-          const nameVal = c2 > 0 ? getCell(sheet, r, c2 - 1) : '';
-          let descVal = val;
+
+      // Pattern 1: current cell is a number
+      if (/^\d+$/.test(val)) {
+        const nameVal = getCell(sheet, r, c + 1);
+        let descVal = getCell(sheet, r, c + 2);
+        if (nameVal && descVal && descVal.length > 10) {
           for (const suffix of [' انتهى.', ' انتهى']) {
             if (descVal.endsWith(suffix)) {
               descVal = descVal.slice(0, -suffix.length).trim();
             }
           }
-          instructions.push({ number: parseInt(numVal, 10), name: nameVal, description: descVal });
+          instructions.push({ number: parseInt(val, 10), name: nameVal, description: descVal });
           found = true;
-          break;
+        }
+      }
+
+      // Pattern 2: description first, number comes later
+      if (!found) {
+        for (let c2 = c + 1; c2 <= maxC; c2++) {
+          const numVal = getCell(sheet, r, c2);
+          if (numVal && /^\d+$/.test(numVal)) {
+            const nameVal = c2 > 0 ? getCell(sheet, r, c2 - 1) : '';
+            let descVal = val;
+            for (const suffix of [' انتهى.', ' انتهى']) {
+              if (descVal.endsWith(suffix)) {
+                descVal = descVal.slice(0, -suffix.length).trim();
+              }
+            }
+            instructions.push({ number: parseInt(numVal, 10), name: nameVal, description: descVal });
+            found = true;
+            break;
+          }
         }
       }
       if (found) break;
@@ -548,6 +611,50 @@ function buildDataRows(
     });
   }
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Category and Brand extraction from Excel
+// ---------------------------------------------------------------------------
+
+/** Extract category codes from column A (col index 0). */
+function extractCategories(sheet: XLSX.WorkSheet): string[] {
+  const { maxR } = getRange(sheet);
+  const seen = new Set<string>();
+  const categories: string[] = [];
+  for (let r = 0; r <= maxR; r++) {
+    const val = getCell(sheet, r, 0);
+    if (val && val.includes('-') && !seen.has(val)) {
+      seen.add(val);
+      categories.push(val);
+    }
+  }
+  return categories;
+}
+
+/** Extract brand names from the "Brand Name" column. */
+function extractBrands(sheet: XLSX.WorkSheet): [string, string][] {
+  const { maxR, maxC } = getRange(sheet);
+  let brandCol = -1;
+  for (let r = 0; r <= maxR; r++) {
+    for (let c = 0; c <= maxC; c++) {
+      const val = getCell(sheet, r, c);
+      if (val.toLowerCase() === 'brand name') {
+        brandCol = c;
+        // Read brand entries below
+        const brands: [string, string][] = [];
+        for (let rr = r + 1; rr <= maxR; rr++) {
+          const name = getCell(sheet, rr, c);
+          if (!name) break;
+          const code = getCell(sheet, rr, c + 1);
+          brands.push([name, code]);
+        }
+        return brands;
+      }
+    }
+    if (brandCol >= 0) break;
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -596,12 +703,16 @@ function parseSheetEn(sheet: XLSX.WorkSheet): ParsedGuideData {
   }
 
   const { instructions, disclaimer, howToTitle } = extractInstructionsEn(sheet, lastDataEnd);
+  const categories = extractCategories(sheet);
+  const brands = extractBrands(sheet);
 
   return {
     sections,
     measurements: instructions,
     disclaimer,
     measurementTitle: howToTitle,
+    categories,
+    brands,
   };
 }
 
@@ -656,12 +767,78 @@ function parseSheetAr(sheet: XLSX.WorkSheet): ParsedGuideData {
   }
 
   const { instructions, disclaimer, howToTitle } = extractInstructionsAr(sheet, lastDataEnd);
+  const categories = extractCategories(sheet);
+  const brands = extractBrands(sheet);
 
   return {
     sections,
     measurements: instructions,
     disclaimer,
     measurementTitle: howToTitle,
+    categories,
+    brands,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Simple sheet parser (no CM/INCH split, e.g. Socks)
+// ---------------------------------------------------------------------------
+
+function parseSimpleSheet(sheet: XLSX.WorkSheet): ParsedGuideData {
+  const { maxR, maxC } = getRange(sheet);
+
+  // Find the header row: first row with 2+ non-empty short text cells
+  let headerRow = -1;
+  let headers: string[] = [];
+  for (let r = 0; r <= maxR; r++) {
+    const rowCells: string[] = [];
+    for (let c = 0; c <= maxC; c++) {
+      const val = getCell(sheet, r, c);
+      if (val) rowCells.push(val);
+    }
+    if (rowCells.length >= 2 && rowCells.every((v) => v.length < 30)) {
+      headerRow = r;
+      // Collect all cells including empty ones to preserve column positions
+      headers = [];
+      for (let c = 0; c <= maxC; c++) {
+        const val = getCell(sheet, r, c);
+        if (val) headers.push(val);
+      }
+      break;
+    }
+  }
+
+  if (headerRow < 0) {
+    throw new Error('No header row found in simple sheet');
+  }
+
+  // Read data rows below header until blank
+  const rows: string[][] = [];
+  for (let r = headerRow + 1; r <= maxR; r++) {
+    const rowVals: string[] = [];
+    let hasData = false;
+    for (let c = 0; c <= maxC; c++) {
+      const val = getCell(sheet, r, c);
+      if (val) hasData = true;
+      rowVals.push(val);
+    }
+    if (!hasData) break;
+    // Only keep cells that correspond to header columns (non-empty columns)
+    const filteredVals: string[] = [];
+    for (let c = 0; c <= maxC; c++) {
+      const headerVal = getCell(sheet, headerRow, c);
+      if (headerVal) {
+        filteredVals.push(rowVals[c] ?? '');
+      }
+    }
+    rows.push(filteredVals);
+  }
+
+  return {
+    sections: [],
+    measurements: [],
+    isSimple: true,
+    simpleData: { headers, rows },
   };
 }
 
@@ -731,13 +908,24 @@ export function parseExcelFile(buffer: ArrayBuffer): {
         sectionCount: enData.sections.length,
       });
     } catch (e) {
-      detection.push({
-        name: enSheetName,
-        lang: 'en',
-        rowCount: 0,
-        sectionCount: 0,
-      });
-      console.error(`Error parsing EN sheet "${enSheetName}":`, e);
+      // Fallback: try simple sheet parse
+      try {
+        enData = parseSimpleSheet(sheet);
+        detection.push({
+          name: enSheetName,
+          lang: 'en',
+          rowCount: enData.simpleData?.rows.length ?? 0,
+          sectionCount: 0,
+        });
+      } catch {
+        detection.push({
+          name: enSheetName,
+          lang: 'en',
+          rowCount: 0,
+          sectionCount: 0,
+        });
+        console.error(`Error parsing EN sheet "${enSheetName}":`, e);
+      }
     }
   }
 
@@ -754,13 +942,45 @@ export function parseExcelFile(buffer: ArrayBuffer): {
         sectionCount: arData.sections.length,
       });
     } catch (e) {
+      // Fallback: try simple sheet parse
+      try {
+        arData = parseSimpleSheet(sheet);
+        detection.push({
+          name: arSheetName,
+          lang: 'ar',
+          rowCount: arData.simpleData?.rows.length ?? 0,
+          sectionCount: 0,
+        });
+      } catch {
+        detection.push({
+          name: arSheetName,
+          lang: 'ar',
+          rowCount: 0,
+          sectionCount: 0,
+        });
+        console.error(`Error parsing AR sheet "${arSheetName}":`, e);
+      }
+    }
+  }
+
+  // Fallback: if no EN/AR named sheets found, try any sheet as simple format
+  // (e.g. Socks with just "Sheet1")
+  if (!enSheetName && !arSheetName && wb.SheetNames.length > 0) {
+    const fallbackName = wb.SheetNames[0];
+    const sheet = wb.Sheets[fallbackName];
+    try {
+      const simpleData = parseSimpleSheet(sheet);
+      // Use as both EN and AR
+      enData = simpleData;
+      arData = { ...simpleData, simpleData: { ...simpleData.simpleData! } };
       detection.push({
-        name: arSheetName,
-        lang: 'ar',
-        rowCount: 0,
+        name: fallbackName,
+        lang: 'en',
+        rowCount: simpleData.simpleData?.rows.length ?? 0,
         sectionCount: 0,
       });
-      console.error(`Error parsing AR sheet "${arSheetName}":`, e);
+    } catch (e) {
+      console.error(`Error parsing fallback sheet "${fallbackName}":`, e);
     }
   }
 

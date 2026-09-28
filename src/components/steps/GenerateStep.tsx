@@ -10,9 +10,11 @@ import {
   ChevronDown,
   FileCode2,
   ImageIcon,
+  Database,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useGuideStore } from '../../store/useGuideStore';
+import { useMappingStore } from '../../store/useMappingStore';
 import { generateSizeGuideHtml } from '../../lib/generator/engine';
 import { downloadAsZip, downloadSingleFile } from '../../lib/utils/zip';
 import {
@@ -37,6 +39,8 @@ export function GenerateStep() {
   const setPreviewLanguage = useGuideStore((s) => s.setPreviewLanguage);
   const reset = useGuideStore((s) => s.reset);
   const setStep = useGuideStore((s) => s.setStep);
+
+  const addMappings = useMappingStore((s) => s.addMappings);
 
   const [showDownloadList, setShowDownloadList] = useState(false);
   const [previewHtml, setPreviewHtml] = useState<string>('');
@@ -182,6 +186,44 @@ export function GenerateStep() {
     setStep('upload');
   }, [reset, setStep]);
 
+  const handleUpdateMappings = useCallback(() => {
+    const newEntries: { brand: string; categoryCode: string; templateId: number }[] = [];
+
+    for (const g of guides) {
+      if (g.guideNumber === null) continue;
+      const templateId = g.guideNumber;
+
+      // Get categories from parsed EN data (col A of Excel)
+      const categories = g.generatorData?.categories ?? [];
+      // Get brands from parsed EN data (Brand Name column)
+      const brands = g.generatorData?.brands ?? [];
+      const brandNames = brands.map(([name]) => name);
+      const brandLabel = brandNames.length > 0 ? brandNames.join(', ') : g.fileName.replace(/\.[^.]+$/, '');
+
+      if (categories.length > 0) {
+        // One mapping entry per category code (matching the CSV format)
+        for (const cat of categories) {
+          newEntries.push({ brand: brandLabel, categoryCode: cat, templateId });
+        }
+      } else {
+        // Fallback: single entry with filename as category
+        newEntries.push({
+          brand: brandLabel,
+          categoryCode: g.fileName.replace(/\.[^.]+$/, ''),
+          templateId,
+        });
+      }
+    }
+
+    if (newEntries.length === 0) {
+      toast.error('No guides with valid numbers to add');
+      return;
+    }
+
+    addMappings(newEntries);
+    toast.success(`Mappings updated with ${newEntries.length} new entries`);
+  }, [guides, addMappings]);
+
   const getFileStatus = useCallback(
     (guideId: string, lang: 'EN' | 'AR') => {
       const guide = guides.find((g) => g.id === guideId);
@@ -319,7 +361,7 @@ export function GenerateStep() {
               srcDoc={previewHtml}
               title="Size Guide Preview"
               className="w-full h-[400px] rounded-lg border border-slate-700 bg-white"
-              sandbox="allow-same-origin"
+              sandbox="allow-scripts allow-same-origin"
             />
           </div>
         </div>
@@ -396,6 +438,24 @@ export function GenerateStep() {
               <ImageIcon className="w-4 h-4" />
             )}
             {imagesExtracting ? 'Extracting...' : 'Download Images'}
+          </motion.button>
+
+          {/* Update Mappings */}
+          <motion.button
+            onClick={handleUpdateMappings}
+            disabled={isGenerating || generatedFiles.length === 0}
+            className={`
+              flex items-center gap-2 px-5 py-3 rounded-lg font-semibold text-sm transition-all
+              ${!isGenerating && generatedFiles.length > 0
+                ? 'bg-slate-700 hover:bg-slate-600 text-white'
+                : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+              }
+            `}
+            whileHover={!isGenerating && generatedFiles.length > 0 ? { scale: 1.02 } : undefined}
+            whileTap={!isGenerating && generatedFiles.length > 0 ? { scale: 0.98 } : undefined}
+          >
+            <Database className="w-4 h-4" />
+            Update Mappings
           </motion.button>
 
           {/* Download ZIP */}

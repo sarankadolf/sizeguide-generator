@@ -156,6 +156,7 @@ ${sfHide}        .sizeGuide-modal .heading {
         .sizeGuide-modal .switch-sf {
             color: #000000;
             text-align: center;
+            ${isRtl ? 'direction: ltr;' : ''}
             float: ${isRtl ? 'left' : 'right'};
             position: relative;
             height: 26px;
@@ -496,3 +497,66 @@ export const CSS_BLOCK_3 = `            @media only screen and (min-width: 768px
                 .sizeGuide-modal .measurement{font-size: 15px; color: #000000}
                 .sizeGuide-modal .tableBlock{font-size: 15px;}
             }            `;
+
+/**
+ * Build CSS block for how-to-meeasure section (matches Python EXTRA_CSS).
+ * The typo 'meeasure' is intentional — matches the class name in the HTML.
+ */
+export function buildHowToMeasureCss(direction: 'ltr' | 'rtl'): string {
+  const isRtl = direction === 'rtl';
+  const h4BeforeMargin = isRtl
+    ? 'margin-right: 0; margin-left: 6px;'
+    : 'margin-right: 6px;';
+
+  return `        .how-to-meeasure {
+            margin: ${isRtl ? '5px 7px 15px 15px' : '5px 15px 15px 7px'};
+            padding: 20px 0 0 0;
+            border-top: 1px solid #ecedeb;
+            counter-reset: step-counter;
+        }
+        .how-to-meeasure .section-title {
+            font-family: "Proxima Nova Bold";
+            font-size: 16px;
+            font-weight: 900;
+            color: #242428;
+            margin-bottom: 16px;
+        }
+        .how-to-measure-body h4 {
+            display: flex;
+            align-items: center;
+            counter-increment: step-counter;
+            margin: 0% auto;
+            font-size: 14px;
+            font-weight: 700;
+            color: #000000;
+            padding-bottom: 4px;
+            text-transform: capitalize;
+        }
+        .how-to-measure-body h4:before {
+            content: counter(step-counter);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            min-width: 20px;
+            border-radius: 50%;
+            background-color: #0f172a;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            ${h4BeforeMargin}
+        }
+        .how-to-measure-body p {
+            margin: 0;
+            padding-bottom: 20px;
+            color: #64748b;
+            font-size: 12px;
+            font-weight: 400;
+        }
+        @media only screen and (max-width: 767px) {
+            .how-to-meeasure {
+                order: 2;
+            }
+        }`;
+}
