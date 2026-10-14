@@ -12,10 +12,6 @@ import {
 } from '../../lib/excel/image-extractor';
 import type { ExtractedImage } from '../../lib/excel/image-extractor';
 
-function validateImageName(name: string): boolean {
-  return /^[a-z0-9_]+$/.test(name);
-}
-
 export function ConfigureStep() {
   const guides = useGuideStore((s) => s.guides);
   const imageBaseUrl = useGuideStore((s) => s.imageBaseUrl);
@@ -51,15 +47,8 @@ export function ConfigureStep() {
     [updateGuide]
   );
 
-  const handleImageNameChange = useCallback(
-    (id: string, value: string) => {
-      updateGuide(id, { imageName: value.toLowerCase() });
-    },
-    [updateGuide]
-  );
-
   // Validation
-  const { allValid, duplicateNumbers, invalidNames } = useMemo(() => {
+  const { allValid, duplicateNumbers } = useMemo(() => {
     const numbers = guides
       .map((g) => g.guideNumber)
       .filter((n): n is number => n !== null);
@@ -67,33 +56,22 @@ export function ConfigureStep() {
       numbers.filter((n, i) => numbers.indexOf(n) !== i)
     );
 
-    const invalidNames = new Set(
-      guides
-        .filter((g) => g.imageName && !validateImageName(g.imageName))
-        .map((g) => g.id)
-    );
-
     const allValid =
       guides.length > 0 &&
       guides.every(
-        (g) =>
-          g.guideNumber !== null &&
-          g.imageName.length > 0 &&
-          validateImageName(g.imageName) &&
-          !duplicateNumbers.has(g.guideNumber)
+        (g) => g.guideNumber !== null && !duplicateNumbers.has(g.guideNumber)
       );
 
-    return { allValid, duplicateNumbers, invalidNames };
+    return { allValid, duplicateNumbers };
   }, [guides]);
 
   const getGuideStatus = useCallback(
     (guide: typeof guides[0]): GuideStatus => {
-      if (guide.guideNumber === null || guide.imageName.length === 0) return 'pending';
-      if (invalidNames.has(guide.id)) return 'error';
-      if (guide.guideNumber !== null && duplicateNumbers.has(guide.guideNumber)) return 'error';
+      if (guide.guideNumber === null) return 'pending';
+      if (duplicateNumbers.has(guide.guideNumber)) return 'error';
       return 'ready';
     },
-    [duplicateNumbers, invalidNames]
+    [duplicateNumbers]
   );
 
   const hasFilesForImageExtraction = useMemo(
@@ -110,11 +88,7 @@ export function ConfigureStep() {
         if (!guide.file || guide.guideNumber === null) continue;
 
         const buffer = await guide.file.arrayBuffer();
-        const images = await extractImagesFromExcel(
-          buffer,
-          guide.fileName,
-          guide.guideNumber
-        );
+        const images = await extractImagesFromExcel(buffer, guide.guideNumber);
         allImages.push(...images);
       }
 
@@ -147,7 +121,7 @@ export function ConfigureStep() {
       <div className="text-center">
         <h2 className="text-2xl font-bold text-white">Configure Guides</h2>
         <p className="text-slate-400 mt-2">
-          Set guide numbers and image names for each file
+          Set guide numbers for each file
         </p>
       </div>
 
@@ -204,9 +178,6 @@ export function ConfigureStep() {
                 Guide #
               </th>
               <th className="text-left text-xs font-semibold text-slate-300 uppercase tracking-wider px-4 py-3">
-                Image Name
-              </th>
-              <th className="text-left text-xs font-semibold text-slate-300 uppercase tracking-wider px-4 py-3">
                 Status
               </th>
             </tr>
@@ -216,7 +187,6 @@ export function ConfigureStep() {
               const rowStatus = getGuideStatus(guide);
               const hasDuplicateNumber =
                 guide.guideNumber !== null && duplicateNumbers.has(guide.guideNumber);
-              const hasInvalidName = invalidNames.has(guide.id);
 
               return (
                 <motion.tr
@@ -252,26 +222,6 @@ export function ConfigureStep() {
                         <div className="flex items-center gap-1 mt-1">
                           <AlertTriangle className="w-3 h-3 text-amber-400" />
                           <span className="text-xs text-amber-400">Template ID already exists</span>
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={guide.imageName}
-                        onChange={(e) => handleImageNameChange(guide.id, e.target.value)}
-                        className={`w-full max-w-[240px] px-3 py-1.5 rounded-lg bg-slate-800 border text-white text-sm font-mono
-                          focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all
-                          ${hasInvalidName ? 'border-red-500' : 'border-slate-600 focus:border-blue-500'}
-                        `}
-                        placeholder="image_name"
-                      />
-                      {hasInvalidName && (
-                        <div className="flex items-center gap-1 mt-1">
-                          <AlertTriangle className="w-3 h-3 text-red-400" />
-                          <span className="text-xs text-red-400">Use lowercase a-z, 0-9, _</span>
                         </div>
                       )}
                     </div>

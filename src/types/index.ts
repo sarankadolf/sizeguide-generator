@@ -28,6 +28,19 @@ export interface DetectedSheet {
   sectionCount: number;
 }
 
+/**
+ * One parsed guide extracted from an Excel workbook. Most workbooks produce
+ * exactly one; multi-guide workbooks (several unrelated size guides clubbed
+ * into one sheet pair) produce several, each independently generatable.
+ */
+export interface ParsedWorkbookGuide {
+  /** Index within the source workbook (0-based), used for stable keys and
+   *  default guide-number ordering. */
+  blockIndex: number;
+  enData: ParsedGuideData | null;
+  arData: ParsedGuideData | null;
+}
+
 // ─── Generator Types (used by lib/generator) ────────────────────────────────
 
 export interface DataRow {
@@ -79,7 +92,6 @@ export interface SizeGuideConfig {
   fileName: string;
   parsedData: ParsedExcelData;
   guideNumber: number | null;
-  imageName: string;
   status: GuideStatus;
   error?: string;
   /** Parsed EN guide data for the HTML generator */

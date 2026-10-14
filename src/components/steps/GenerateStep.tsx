@@ -11,11 +11,13 @@ import {
   FileCode2,
   ImageIcon,
   Database,
+  ClipboardCopy,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useGuideStore } from '../../store/useGuideStore';
 import { useMappingStore } from '../../store/useMappingStore';
 import { generateSizeGuideHtml } from '../../lib/generator/engine';
+import { buildHandoverTextForGuides } from '../../lib/generator/handover';
 import { downloadAsZip, downloadSingleFile } from '../../lib/utils/zip';
 import {
   extractImagesFromExcel,
@@ -74,7 +76,7 @@ export function GenerateStep() {
         for (const lang of ['en', 'ar'] as const) {
           try {
             const langSuffix = lang;
-            const imageUrl = `${imageBaseUrl}${buildImageBaseName(guide.guideNumber, guide.fileName, lang)}`;
+            const imageUrl = `${imageBaseUrl}${buildImageBaseName(guide.guideNumber, lang)}`;
             // Use AR-specific parsed data for Arabic, fall back to EN data
             const dataForLang = lang === 'ar' && guide.arGeneratorData
               ? guide.arGeneratorData
@@ -154,11 +156,7 @@ export function GenerateStep() {
         if (!guide.file || guide.guideNumber === null) continue;
 
         const buffer = await guide.file.arrayBuffer();
-        const images = await extractImagesFromExcel(
-          buffer,
-          guide.fileName,
-          guide.guideNumber
-        );
+        const images = await extractImagesFromExcel(buffer, guide.guideNumber);
         allImages.push(...images);
       }
 
@@ -180,6 +178,23 @@ export function GenerateStep() {
   const handleDownloadFile = useCallback((file: GeneratedFile) => {
     downloadSingleFile(file);
   }, []);
+
+  const handleCopyHandoverText = useCallback(async () => {
+    const guidesWithNumbers = guides.filter((g) => g.guideNumber !== null);
+    if (guidesWithNumbers.length === 0) {
+      toast.error('No guides with valid guide numbers to copy');
+      return;
+    }
+
+    const text = buildHandoverTextForGuides(guidesWithNumbers);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Handover text copied to clipboard!');
+    } catch {
+      toast.error('Failed to copy to clipboard');
+    }
+  }, [guides]);
 
   const handleStartOver = useCallback(() => {
     reset();
@@ -474,6 +489,24 @@ export function GenerateStep() {
           >
             <Download className="w-4 h-4" />
             Download HTML ZIP
+          </motion.button>
+
+          {/* Copy Handover Text */}
+          <motion.button
+            onClick={handleCopyHandoverText}
+            disabled={isGenerating || generatedFiles.length === 0}
+            className={`
+              flex items-center gap-2 px-5 py-3 rounded-lg font-semibold text-sm transition-all
+              ${!isGenerating && generatedFiles.length > 0
+                ? 'bg-slate-700 hover:bg-slate-600 text-white'
+                : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+              }
+            `}
+            whileHover={!isGenerating && generatedFiles.length > 0 ? { scale: 1.02 } : undefined}
+            whileTap={!isGenerating && generatedFiles.length > 0 ? { scale: 0.98 } : undefined}
+          >
+            <ClipboardCopy className="w-4 h-4" />
+            Copy Handover Text
           </motion.button>
         </div>
       </div>

@@ -6,6 +6,7 @@ import type {
   MeasurementInstruction,
   DetectedSheet,
   SimpleTableData,
+  ParsedWorkbookGuide,
 } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -116,6 +117,29 @@ function getCell(sheet: XLSX.WorkSheet, row: number, col: number): string {
   return cellStr(cell?.v);
 }
 
+/**
+ * Convert a single cm numeric string to inches, rounded to the nearest
+ * quarter-inch (matches the production reference templates, e.g.
+ * sizeguide_2002_en.html: 76cm -> 30in, 80.5cm -> 31.75in).
+ */
+function cmToInch(cmStr: string): string {
+  if (!cmStr) return '';
+  const num = Number(cmStr);
+  if (Number.isNaN(num)) return cmStr;
+  const inch = Math.round((num / 2.54) * 4) / 4;
+  return String(inch);
+}
+
+/** Convert a cm value or a "lo-hi" cm range to its inch equivalent. */
+function cmRangeToInch(val: string): string {
+  if (!val) return '';
+  const m = val.match(/^(-?\d+(?:\.\d+)?)\s*-\s*(-?\d+(?:\.\d+)?)$/);
+  if (m) {
+    return `${cmToInch(m[1])}-${cmToInch(m[2])}`;
+  }
+  return cmToInch(val);
+}
+
 /** Get the range of a sheet. */
 function getRange(sheet: XLSX.WorkSheet): { minR: number; maxR: number; minC: number; maxC: number } {
   const ref = sheet['!ref'];
@@ -127,6 +151,112 @@ function getRange(sheet: XLSX.WorkSheet): { minR: number; maxR: number; minC: nu
     minC: range.s.c,
     maxC: range.e.c,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-guide block detection
+// ---------------------------------------------------------------------------
+
+export interface GuideBlockRange {
+  /** 0-based first row of this guide's data (inclusive) — from its own
+   *  "INTERNATIONAL CONVERSION" header row. */
+  startRow: number;
+  /** 0-based last row of this guide's data (inclusive) — the end of its own
+   *  "How to Measure" footer, or maxR for the final block. */
+  endRow: number;
+}
+
+/**
+ * Find row indices where a "How to Measure" (or Arabic equivalent) footer
+ * marker occurs. Each occurrence closes out one guide block. Used to decide
+ * whether a sheet contains ONE guide (possibly with multiple measurement
+ * sections, e.g. Top + Bottom) or SEVERAL unrelated guides clubbed together.
+ */
+function findHowToMeasureRows(sheet: XLSX.WorkSheet, isAr: boolean): number[] {
+  const { maxR, maxC } = getRange(sheet);
+  const rows: number[] = [];
+  for (let r = 0; r <= maxR; r++) {
+    for (let c = 0; c <= maxC; c++) {
+      const val = getCell(sheet, r, c);
+      if (!val) continue;
+      const hit = isAr
+        ? val.includes('كيفية قياس') || val.includes('كيف تقيس')
+        : val.toLowerCase().includes('how to measure');
+      if (hit) {
+        rows.push(r);
+        break;
+      }
+    }
+  }
+  return rows;
+}
+
+/**
+ * Find row indices where a fresh "INTERNATIONAL CONVERSION" (or Arabic
+ * equivalent) header starts — one per measurement block, regardless of
+ * whether those blocks belong to one guide or many.
+ */
+function findConversionHeaderRows(sheet: XLSX.WorkSheet, isAr: boolean): number[] {
+  const { maxR, maxC } = getRange(sheet);
+  const rows: number[] = [];
+  for (let r = 0; r <= maxR; r++) {
+    for (let c = 0; c <= maxC; c++) {
+      const val = getCell(sheet, r, c);
+      if (!val) continue;
+      const hit = isAr
+        ? val.includes('التحويل الدولي') || val.includes('التخويل الدولي')
+        : (() => {
+            const uv = val.toUpperCase();
+            return uv.includes('INTERNATIONAL') && uv.includes('CONVERSION');
+          })();
+      if (hit) {
+        rows.push(r);
+        break;
+      }
+    }
+  }
+  return rows;
+}
+
+/**
+ * Decide whether a sheet contains multiple independent guides clubbed
+ * together, and if so, return their row ranges.
+ *
+ * Heuristic: if the count of "How to Measure" footers equals the count of
+ * "INTERNATIONAL CONVERSION" headers, and that count is >= 2, treat each
+ * (header, footer) pair as ONE independent guide. Otherwise (e.g. a single
+ * guide with N measurement sections but only ONE "How to Measure" footer
+ * at the end, like a Top+Bottom pyjama set) return null — meaning "parse
+ * as one guide, unchanged".
+ *
+ * Row ranges fully partition the sheet (no gaps/overlaps): each block runs
+ * from just after the previous block ends to one row before the NEXT
+ * block's own category-code row (which conventionally sits one row above
+ * its "INTERNATIONAL CONVERSION" header — mirrors the gap already used by
+ * the first block, which starts at row 0). The last block runs to maxR, so
+ * every row in the sheet belongs to exactly one block — including trailing
+ * disclaimer/instruction rows after each block's own footer.
+ */
+export function detectGuideBlocks(
+  sheet: XLSX.WorkSheet,
+  isAr: boolean,
+): GuideBlockRange[] | null {
+  const headerRows = findConversionHeaderRows(sheet, isAr);
+  const footerRows = findHowToMeasureRows(sheet, isAr);
+
+  if (headerRows.length < 2) return null; // only one guide, nothing to split
+  if (headerRows.length !== footerRows.length) return null; // ambiguous shape, don't guess
+
+  const { maxR } = getRange(sheet);
+  const n = headerRows.length;
+  const blocks: GuideBlockRange[] = [];
+  let start = 0;
+  for (let i = 0; i < n; i++) {
+    const end = i < n - 1 ? headerRows[i + 1] - 2 : maxR;
+    blocks.push({ startRow: start, endRow: end });
+    start = end + 1;
+  }
+  return blocks;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,10 +274,14 @@ interface SectionMeta {
   sectionTitle: string;
 }
 
-function detectSectionsEn(sheet: XLSX.WorkSheet): SectionMeta[] {
+function detectSectionsEn(
+  sheet: XLSX.WorkSheet,
+  rowBounds?: { start: number; end: number },
+): SectionMeta[] {
   const sections: SectionMeta[] = [];
-  const { maxR, maxC } = getRange(sheet);
-  let rowIdx = 0;
+  const { maxC } = getRange(sheet);
+  const maxR = rowBounds?.end ?? getRange(sheet).maxR;
+  let rowIdx = rowBounds?.start ?? 0;
 
   while (rowIdx <= maxR) {
     let foundHeader = false;
@@ -284,10 +418,14 @@ function detectSectionsEn(sheet: XLSX.WorkSheet): SectionMeta[] {
 // Section detection — AR
 // ---------------------------------------------------------------------------
 
-function detectSectionsAr(sheet: XLSX.WorkSheet): SectionMeta[] {
+function detectSectionsAr(
+  sheet: XLSX.WorkSheet,
+  rowBounds?: { start: number; end: number },
+): SectionMeta[] {
   const sections: SectionMeta[] = [];
-  const { maxR, maxC } = getRange(sheet);
-  let rowIdx = 0;
+  const { maxC } = getRange(sheet);
+  const maxR = rowBounds?.end ?? getRange(sheet).maxR;
+  let rowIdx = rowBounds?.start ?? 0;
 
   while (rowIdx <= maxR) {
     let foundHeader = false;
@@ -468,6 +606,7 @@ _isAr = false,
 function extractInstructionsEn(
   sheet: XLSX.WorkSheet,
   dataEnd: number,
+  rowBounds?: { start: number; end: number },
 ): {
   instructions: MeasurementInstruction[];
   disclaimer: string;
@@ -476,7 +615,8 @@ function extractInstructionsEn(
   const instructions: MeasurementInstruction[] = [];
   let disclaimer = '';
   let howToTitle = '';
-  const { maxR, maxC } = getRange(sheet);
+  const { maxC } = getRange(sheet);
+  const maxR = rowBounds?.end ?? getRange(sheet).maxR;
 
   for (let r = dataEnd + 1; r <= maxR; r++) {
     for (let c = 0; c <= maxC; c++) {
@@ -524,6 +664,7 @@ function extractInstructionsEn(
 function extractInstructionsAr(
   sheet: XLSX.WorkSheet,
   dataEnd: number,
+  rowBounds?: { start: number; end: number },
 ): {
   instructions: MeasurementInstruction[];
   disclaimer: string;
@@ -532,7 +673,8 @@ function extractInstructionsAr(
   const instructions: MeasurementInstruction[] = [];
   let disclaimer = '';
   let howToTitle = '';
-  const { maxR, maxC } = getRange(sheet);
+  const { maxC } = getRange(sheet);
+  const maxR = rowBounds?.end ?? getRange(sheet).maxR;
 
   for (let r = dataEnd + 1; r <= maxR; r++) {
     for (let c = 0; c <= maxC; c++) {
@@ -617,12 +759,17 @@ function buildDataRows(
 // Category and Brand extraction from Excel
 // ---------------------------------------------------------------------------
 
-/** Extract category codes from column A (col index 0). */
-function extractCategories(sheet: XLSX.WorkSheet): string[] {
-  const { maxR } = getRange(sheet);
+/** Extract category codes from column A (col index 0), optionally bounded
+ *  to a row range (used when parsing one block of a multi-guide sheet). */
+function extractCategories(
+  sheet: XLSX.WorkSheet,
+  rowBounds?: { start: number; end: number },
+): string[] {
+  const maxR = rowBounds?.end ?? getRange(sheet).maxR;
+  const minR = rowBounds?.start ?? 0;
   const seen = new Set<string>();
   const categories: string[] = [];
-  for (let r = 0; r <= maxR; r++) {
+  for (let r = minR; r <= maxR; r++) {
     const val = getCell(sheet, r, 0);
     if (val && val.includes('-') && !seen.has(val)) {
       seen.add(val);
@@ -632,11 +779,17 @@ function extractCategories(sheet: XLSX.WorkSheet): string[] {
   return categories;
 }
 
-/** Extract brand names from the "Brand Name" column. */
-function extractBrands(sheet: XLSX.WorkSheet): [string, string][] {
-  const { maxR, maxC } = getRange(sheet);
+/** Extract brand names from the "Brand Name" column, optionally bounded to
+ *  a row range (used when parsing one block of a multi-guide sheet). */
+function extractBrands(
+  sheet: XLSX.WorkSheet,
+  rowBounds?: { start: number; end: number },
+): [string, string][] {
+  const maxR = rowBounds?.end ?? getRange(sheet).maxR;
+  const minR = rowBounds?.start ?? 0;
+  const { maxC } = getRange(sheet);
   let brandCol = -1;
-  for (let r = 0; r <= maxR; r++) {
+  for (let r = minR; r <= maxR; r++) {
     for (let c = 0; c <= maxC; c++) {
       const val = getCell(sheet, r, c);
       if (val.toLowerCase() === 'brand name') {
@@ -661,8 +814,11 @@ function extractBrands(sheet: XLSX.WorkSheet): [string, string][] {
 // Parse EN sheet
 // ---------------------------------------------------------------------------
 
-function parseSheetEn(sheet: XLSX.WorkSheet): ParsedGuideData {
-  const sectionsMeta = detectSectionsEn(sheet);
+function parseSheetEn(
+  sheet: XLSX.WorkSheet,
+  rowBounds?: { start: number; end: number },
+): ParsedGuideData {
+  const sectionsMeta = detectSectionsEn(sheet, rowBounds);
   if (sectionsMeta.length === 0) {
     throw new Error('No data sections found in EN sheet');
   }
@@ -680,13 +836,23 @@ function parseSheetEn(sheet: XLSX.WorkSheet): ParsedGuideData {
     const { colIdx: alphaCol } = findAlphaCol(convCols);
     const rowspanMap = computeRowspan(sheet, dataStart, dataEnd, alphaCol);
 
+    // Some sheets (e.g. Coega Womens) only ship (CM) measurement columns with
+    // no (INCH) counterpart. In that case derive inch values from the cm
+    // values instead of leaving the INCH table blank.
+    const deriveInch = inchCols.length === 0 && cmCols.length > 0;
+
     const cmRawRows: string[][] = [];
     const inchRawRows: string[][] = [];
     for (let r = dataStart; r <= dataEnd; r++) {
       const cmRow = convCols.map(([c]) => getCell(sheet, r, c));
-      cmRow.push(...cmCols.map(([c]) => getCell(sheet, r, c)));
+      const cmVals = cmCols.map(([c]) => getCell(sheet, r, c));
+      cmRow.push(...cmVals);
       const inchRow = convCols.map(([c]) => getCell(sheet, r, c));
-      inchRow.push(...inchCols.map(([c]) => getCell(sheet, r, c)));
+      if (deriveInch) {
+        inchRow.push(...cmVals.map(cmRangeToInch));
+      } else {
+        inchRow.push(...inchCols.map(([c]) => getCell(sheet, r, c)));
+      }
       cmRawRows.push(cmRow);
       inchRawRows.push(inchRow);
     }
@@ -702,9 +868,9 @@ function parseSheetEn(sheet: XLSX.WorkSheet): ParsedGuideData {
     lastDataEnd = Math.max(lastDataEnd, dataEnd);
   }
 
-  const { instructions, disclaimer, howToTitle } = extractInstructionsEn(sheet, lastDataEnd);
-  const categories = extractCategories(sheet);
-  const brands = extractBrands(sheet);
+  const { instructions, disclaimer, howToTitle } = extractInstructionsEn(sheet, lastDataEnd, rowBounds);
+  const categories = extractCategories(sheet, rowBounds);
+  const brands = extractBrands(sheet, rowBounds);
 
   return {
     sections,
@@ -720,8 +886,11 @@ function parseSheetEn(sheet: XLSX.WorkSheet): ParsedGuideData {
 // Parse AR sheet
 // ---------------------------------------------------------------------------
 
-function parseSheetAr(sheet: XLSX.WorkSheet): ParsedGuideData {
-  const sectionsMeta = detectSectionsAr(sheet);
+function parseSheetAr(
+  sheet: XLSX.WorkSheet,
+  rowBounds?: { start: number; end: number },
+): ParsedGuideData {
+  const sectionsMeta = detectSectionsAr(sheet, rowBounds);
   if (sectionsMeta.length === 0) {
     throw new Error('No data sections found in AR sheet');
   }
@@ -744,13 +913,23 @@ function parseSheetAr(sheet: XLSX.WorkSheet): ParsedGuideData {
     const { colIdx: alphaCol } = findAlphaCol(convCols, true);
     const rowspanMap = computeRowspan(sheet, dataStart, dataEnd, alphaCol);
 
+    // Some sheets (e.g. Coega Womens) only ship (CM) measurement columns with
+    // no (INCH) counterpart. In that case derive inch values from the cm
+    // values instead of leaving the INCH table blank.
+    const deriveInch = inchCols.length === 0 && cmCols.length > 0;
+
     const cmRawRows: string[][] = [];
     const inchRawRows: string[][] = [];
     for (let r = dataStart; r <= dataEnd; r++) {
       const cmRow = convCols.map(([c]) => getCell(sheet, r, c));
-      cmRow.push(...cmCols.map(([c]) => getCell(sheet, r, c)));
+      const cmVals = cmCols.map(([c]) => getCell(sheet, r, c));
+      cmRow.push(...cmVals);
       const inchRow = convCols.map(([c]) => getCell(sheet, r, c));
-      inchRow.push(...inchCols.map(([c]) => getCell(sheet, r, c)));
+      if (deriveInch) {
+        inchRow.push(...cmVals.map(cmRangeToInch));
+      } else {
+        inchRow.push(...inchCols.map(([c]) => getCell(sheet, r, c)));
+      }
       cmRawRows.push(cmRow);
       inchRawRows.push(inchRow);
     }
@@ -766,9 +945,9 @@ function parseSheetAr(sheet: XLSX.WorkSheet): ParsedGuideData {
     lastDataEnd = Math.max(lastDataEnd, dataEnd);
   }
 
-  const { instructions, disclaimer, howToTitle } = extractInstructionsAr(sheet, lastDataEnd);
-  const categories = extractCategories(sheet);
-  const brands = extractBrands(sheet);
+  const { instructions, disclaimer, howToTitle } = extractInstructionsAr(sheet, lastDataEnd, rowBounds);
+  const categories = extractCategories(sheet, rowBounds);
+  const brands = extractBrands(sheet, rowBounds);
 
   return {
     sections,
@@ -879,28 +1058,101 @@ function findSheet(
 // ---------------------------------------------------------------------------
 
 /**
- * Parse an Excel file buffer and extract EN/AR size guide data.
+ * Parse an Excel file buffer and extract size guide data.
+ *
+ * Most workbooks contain exactly one size guide and return a single-element
+ * `guides` array. When a workbook clubs several unrelated size guides into
+ * one EN/AR sheet pair (detected via `detectGuideBlocks` — multiple
+ * independent "INTERNATIONAL CONVERSION" + "How to Measure" blocks), each
+ * block is parsed independently and returned as its own guide, so the
+ * caller can generate N separate HTML template pairs from one upload.
  *
  * @param buffer - ArrayBuffer of the uploaded .xlsx file
- * @returns Parsed data for both languages (null if sheet not found) and detection info
+ * @returns One or more parsed guides, plus detection info
  */
 export function parseExcelFile(buffer: ArrayBuffer): {
-  enData: ParsedGuideData | null;
-  arData: ParsedGuideData | null;
+  guides: ParsedWorkbookGuide[];
   detection: DetectedSheet[];
 } {
   const wb = XLSX.read(buffer, { type: 'array' });
   const detection: DetectedSheet[] = [];
 
+  const enSheetName = findSheet(wb, 'en');
+  const arSheetName = findSheet(wb, 'ar');
+  const enSheet = enSheetName ? wb.Sheets[enSheetName] : null;
+  const arSheet = arSheetName ? wb.Sheets[arSheetName] : null;
+
+  // Detect multi-guide blocks independently per language sheet, but only
+  // honor a split when BOTH sheets agree on the block count — if they
+  // disagree (or one sheet is missing), fall back to treating the workbook
+  // as a single guide rather than guessing a misaligned split.
+  const enBlocks = enSheet ? detectGuideBlocks(enSheet, false) : null;
+  const arBlocks = arSheet ? detectGuideBlocks(arSheet, true) : null;
+
+  const blockCount =
+    enBlocks && arBlocks && enBlocks.length === arBlocks.length
+      ? enBlocks.length
+      : null;
+
+  if (blockCount && blockCount >= 2) {
+    // --- Multi-guide workbook: parse each block independently ---
+    const guides: ParsedWorkbookGuide[] = [];
+    for (let i = 0; i < blockCount; i++) {
+      let enData: ParsedGuideData | null = null;
+      let arData: ParsedGuideData | null = null;
+      try {
+        if (enSheet && enBlocks) {
+          const b = enBlocks[i];
+          enData = parseSheetEn(enSheet, { start: b.startRow, end: b.endRow });
+        }
+      } catch (e) {
+        console.error(`Error parsing EN block ${i}:`, e);
+      }
+      try {
+        if (arSheet && arBlocks) {
+          const b = arBlocks[i];
+          arData = parseSheetAr(arSheet, { start: b.startRow, end: b.endRow });
+        }
+      } catch (e) {
+        console.error(`Error parsing AR block ${i}:`, e);
+      }
+      guides.push({ blockIndex: i, enData, arData });
+    }
+
+    if (enSheetName) {
+      detection.push({
+        name: enSheetName,
+        lang: 'en',
+        rowCount: guides.reduce(
+          (sum, g) => sum + (g.enData?.sections.reduce((s, se) => s + se.cmRows.length, 0) ?? 0),
+          0,
+        ),
+        sectionCount: blockCount,
+      });
+    }
+    if (arSheetName) {
+      detection.push({
+        name: arSheetName,
+        lang: 'ar',
+        rowCount: guides.reduce(
+          (sum, g) => sum + (g.arData?.sections.reduce((s, se) => s + se.cmRows.length, 0) ?? 0),
+          0,
+        ),
+        sectionCount: blockCount,
+      });
+    }
+
+    return { guides, detection };
+  }
+
+  // --- Single-guide path: existing behavior, unchanged ---
   let enData: ParsedGuideData | null = null;
   let arData: ParsedGuideData | null = null;
 
   // EN
-  const enSheetName = findSheet(wb, 'en');
-  if (enSheetName) {
-    const sheet = wb.Sheets[enSheetName];
+  if (enSheetName && enSheet) {
     try {
-      enData = parseSheetEn(sheet);
+      enData = parseSheetEn(enSheet);
       detection.push({
         name: enSheetName,
         lang: 'en',
@@ -910,7 +1162,7 @@ export function parseExcelFile(buffer: ArrayBuffer): {
     } catch (e) {
       // Fallback: try simple sheet parse
       try {
-        enData = parseSimpleSheet(sheet);
+        enData = parseSimpleSheet(enSheet);
         detection.push({
           name: enSheetName,
           lang: 'en',
@@ -930,11 +1182,9 @@ export function parseExcelFile(buffer: ArrayBuffer): {
   }
 
   // AR
-  const arSheetName = findSheet(wb, 'ar');
-  if (arSheetName) {
-    const sheet = wb.Sheets[arSheetName];
+  if (arSheetName && arSheet) {
     try {
-      arData = parseSheetAr(sheet);
+      arData = parseSheetAr(arSheet);
       detection.push({
         name: arSheetName,
         lang: 'ar',
@@ -944,7 +1194,7 @@ export function parseExcelFile(buffer: ArrayBuffer): {
     } catch (e) {
       // Fallback: try simple sheet parse
       try {
-        arData = parseSimpleSheet(sheet);
+        arData = parseSimpleSheet(arSheet);
         detection.push({
           name: arSheetName,
           lang: 'ar',
@@ -984,5 +1234,5 @@ export function parseExcelFile(buffer: ArrayBuffer): {
     }
   }
 
-  return { enData, arData, detection };
+  return { guides: [{ blockIndex: 0, enData, arData }], detection };
 }

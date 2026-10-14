@@ -1,19 +1,17 @@
 /**
- * Build the image name (without extension) used in both:
- * - Downloaded image filenames: sizeGuide_{number}_{originalName}_{lang}.png
- * - HTML image URLs: {baseUrl}sizeGuide_{number}_{originalName}_{lang}
+ * Build the image base name (without extension) used in both:
+ * - Downloaded image filenames: sizeguide_{number}_{lang}.png
+ * - HTML image URLs: {baseUrl}sizeguide_{number}_{lang}
  *
- * Uses the ORIGINAL Excel filename as-is (minus .xlsx extension).
- * This ensures compatibility with images already uploaded to Amplience.
+ * This is intentionally IDENTICAL to the generated HTML template's base name
+ * (sizeguide_{number}_{lang}.html) so the image file can be matched 1:1 with
+ * its template just by swapping the extension.
  *
- * Example: "Women- Blazers.xlsx" → "sizeGuide_1500_Women- Blazers_en"
- * Example: "Women-Denim Jeans-Jeggings-Shorts-Skirt.xlsx" → "sizeGuide_1504_Women-Denim Jeans-Jeggings-Shorts-Skirt_ar"
+ * Example: guideNumber=1500, lang='en' → "sizeguide_1500_en"
  */
 export function buildImageBaseName(
   guideNumber: number,
-  fileName: string,
   lang: 'en' | 'ar'
 ): string {
-  const base = fileName.replace(/\.xlsx$/i, '');
-  return `sizeGuide_${guideNumber}_${base}_${lang}`;
+  return `sizeguide_${guideNumber}_${lang}`;
 }

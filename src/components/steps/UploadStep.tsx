@@ -1,12 +1,15 @@
 import { useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { FileSpreadsheet, Trash2, ArrowRight, Languages } from 'lucide-react';
+import { FileSpreadsheet, Trash2, ArrowRight, Languages, Split } from 'lucide-react';
 import { toast } from 'sonner';
 import { useGuideStore } from '../../store/useGuideStore';
 import { DropZone } from '../ui/DropZone';
 import { StatusBadge } from '../ui/StatusBadge';
 import { parseExcelFile } from '../../lib/excel/parser';
-import { suggestImageName } from '../../lib/utils/filename';
+
+/** Matches the "[n/N]" suffix appended to fileName for guides that were
+ *  split out of one multi-guide workbook (see UploadStep's handleFilesDrop). */
+const SPLIT_SUFFIX_RE = /^(.*) \[(\d+)\/(\d+)\]$/;
 
 export function UploadStep() {
   const guides = useGuideStore((s) => s.guides);
@@ -20,30 +23,39 @@ export function UploadStep() {
         try {
           const buffer = await file.arrayBuffer();
           const parsed = parseExcelFile(buffer);
-          const imageName = suggestImageName(file.name);
-          const id = `guide_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+          const isMultiGuide = parsed.guides.length > 1;
 
-          const parsedData = {
-            fileName: file.name,
-            sheets: [] as import('../../types').ParsedSheet[],
-            sheetCount: parsed.detection.length,
-            hasEN: parsed.enData !== null,
-            hasAR: parsed.arData !== null,
-          };
+          for (const guideBlock of parsed.guides) {
+            const id = `guide_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+            const displayName = isMultiGuide
+              ? `${file.name} [${guideBlock.blockIndex + 1}/${parsed.guides.length}]`
+              : file.name;
 
-          addGuide({
-            id,
-            fileName: file.name,
-            parsedData,
-            guideNumber: null,
-            imageName,
-            status: 'parsed',
-            generatorData: parsed.enData ?? parsed.arData ?? undefined,
-            arGeneratorData: parsed.arData ?? undefined,
-            file, // Retain original File for image extraction
-          });
+            const parsedData = {
+              fileName: displayName,
+              sheets: [] as import('../../types').ParsedSheet[],
+              sheetCount: parsed.detection.length,
+              hasEN: guideBlock.enData !== null,
+              hasAR: guideBlock.arData !== null,
+            };
 
-          toast.success(`Parsed "${file.name}" — ${parsed.detection.length} sheet(s) detected`);
+            addGuide({
+              id,
+              fileName: displayName,
+              parsedData,
+              guideNumber: null,
+              status: 'parsed',
+              generatorData: guideBlock.enData ?? guideBlock.arData ?? undefined,
+              arGeneratorData: guideBlock.arData ?? undefined,
+              file, // Retain original File for image extraction (shared across split guides)
+            });
+          }
+
+          toast.success(
+            isMultiGuide
+              ? `Parsed "${file.name}" — split into ${parsed.guides.length} size guides`
+              : `Parsed "${file.name}" — ${parsed.detection.length} sheet(s) detected`
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Failed to parse file';
           toast.error(`Error parsing "${file.name}": ${message}`);
@@ -108,6 +120,16 @@ export function UploadStep() {
                       <span className="text-xs text-slate-400">
                         {guide.parsedData.sheetCount} sheet{guide.parsedData.sheetCount !== 1 ? 's' : ''}
                       </span>
+                      {(() => {
+                        const m = guide.fileName.match(SPLIT_SUFFIX_RE);
+                        if (!m) return null;
+                        return (
+                          <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-purple-600/15 text-purple-300 border border-purple-500/30">
+                            <Split className="w-3 h-3" />
+                            Split {m[2]}/{m[3]}
+                          </span>
+                        );
+                      })()}
                       <div className="flex items-center gap-1.5">
                         <Languages className="w-3 h-3 text-slate-500" />
                         {guide.parsedData.hasEN && (
